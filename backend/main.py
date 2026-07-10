@@ -2,6 +2,7 @@ import json
 import os
 import re
 import uuid
+from pathlib import Path
 
 from anthropic import Anthropic
 from fastapi import FastAPI, HTTPException
@@ -71,6 +72,13 @@ class MessageRequest(BaseModel):
     message: str
 
 
+def response_text(resp) -> str:
+    for block in resp.content:
+        if block.type == "text":
+            return block.text
+    raise ValueError(f"no text block in model response: {resp.content!r}")
+
+
 def extract_json(text: str) -> dict:
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if not match:
@@ -94,7 +102,7 @@ def generate_persona(scenario: dict) -> dict:
         max_tokens=300,
         messages=[{"role": "user", "content": prompt}],
     )
-    return extract_json(resp.content[0].text)
+    return extract_json(response_text(resp))
 
 
 def build_system_prompt(scenario: dict, persona: dict) -> str:
@@ -151,7 +159,7 @@ def send_message(session_id: str, req: MessageRequest):
         system=system,
         messages=session["history"],
     )
-    reply = resp.content[0].text
+    reply = response_text(resp)
     session["history"].append({"role": "assistant", "content": reply})
     return {"reply": reply}
 
@@ -182,7 +190,7 @@ def end_session(session_id: str):
         max_tokens=400,
         messages=[{"role": "user", "content": prompt}],
     )
-    debrief = extract_json(resp.content[0].text)
+    debrief = extract_json(response_text(resp))
 
     return {
         "target": persona["target"],
@@ -193,4 +201,5 @@ def end_session(session_id: str):
     }
 
 
-app.mount("/", StaticFiles(directory="../frontend", html=True), name="frontend")
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
