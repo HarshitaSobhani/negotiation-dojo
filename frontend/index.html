@@ -14,6 +14,16 @@
   .wrap { max-width: 640px; margin: 0 auto; padding: 32px 20px 80px; }
   h1 { font-size: 1.5rem; margin-bottom: 4px; }
   .sub { color: #666; margin-top: 0; margin-bottom: 28px; }
+  .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+  .topbar .links { display: flex; gap: 14px; font-size: 0.85rem; align-items: center; }
+  .topbar button.link { color: #2a63f6; background: none; border: none; padding: 0; cursor: pointer; font-size: 0.85rem; text-decoration: underline; }
+
+  form.auth { display: flex; flex-direction: column; gap: 10px; max-width: 340px; }
+  label { font-size: 0.85rem; color: #555; }
+  input[type=text], input[type=email], input[type=password], textarea, select {
+    padding: 10px 12px; border: 1px solid #ccc; border-radius: 8px; font-size: 0.95rem; font-family: inherit; width: 100%;
+  }
+  textarea { resize: vertical; min-height: 70px; }
 
   .cards { display: grid; gap: 14px; }
   .card {
@@ -22,7 +32,8 @@
   }
   .card:hover { border-color: #999; }
   .card h3 { margin: 0 0 6px; font-size: 1.05rem; }
-  .card p { margin: 0; color: #555; font-size: 0.92rem; line-height: 1.4; }
+  .card p { margin: 0; color: #555; font-size: 0.9rem; }
+  .card .meta { font-size: 0.78rem; color: #999; margin-top: 6px; }
 
   .chat-header { border-bottom: 1px solid #ddd; padding-bottom: 14px; margin-bottom: 16px; }
   .chat-header h2 { margin: 0 0 6px; font-size: 1.2rem; }
@@ -35,86 +46,196 @@
   .msg.pending { opacity: 0.5; }
 
   form.compose { display: flex; gap: 8px; }
-  input[type=text] {
-    flex: 1; padding: 10px 12px; border: 1px solid #ccc; border-radius: 8px; font-size: 0.95rem;
-  }
+  input[type=text].compose-input { flex: 1; }
   button {
     padding: 10px 16px; border: none; border-radius: 8px; background: #2a63f6; color: #fff;
     font-size: 0.95rem; cursor: pointer;
   }
   button:disabled { opacity: 0.5; cursor: default; }
   button.secondary { background: #eee; color: #333; }
-  .actions { display: flex; justify-content: flex-end; margin-top: 14px; }
+  .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px; }
 
   .reveal { background: #fff; border: 1px solid #ddd; border-radius: 10px; padding: 20px; }
   .reveal h2 { margin-top: 0; }
-  .numbers { display: flex; gap: 24px; margin: 14px 0; }
-  .numbers div { flex: 1; }
+  .numbers { display: flex; gap: 24px; margin: 14px 0; flex-wrap: wrap; }
+  .numbers div { flex: 1; min-width: 100px; }
   .numbers .label { font-size: 0.8rem; color: #777; text-transform: uppercase; }
   .numbers .value { font-size: 1.3rem; font-weight: 600; }
   .outcome { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #eef; font-size: 0.85rem; margin-bottom: 10px; }
   .error { color: #c0392b; margin-top: 10px; font-size: 0.9rem; }
+  .empty { color: #888; font-size: 0.9rem; }
 </style>
 </head>
 <body>
 <div class="wrap" id="app"></div>
 
 <script>
-const SCENARIOS = [
-  { id: "salary", title: "Salary Negotiation", desc: "You've received a job offer as a Senior Software Engineer and want to negotiate the base salary before accepting." },
-  { id: "rent", title: "Apartment Rent", desc: "Your landlord proposed a rent increase at lease renewal. You want to negotiate the new monthly rent down." },
-  { id: "vendor", title: "Vendor / Freelance Rate", desc: "You're a freelancer negotiating your project rate with a prospective client." },
-];
-
-let state = { screen: "pick", sessionId: null, title: "", description: "", messages: [], sending: false, ending: false, error: null };
+let categories = [];
+let state = { screen: "loading", user: null, error: null };
+let chatState = null; // { negotiationId, category, scenarioText, messages, sending, ending, error }
 
 const app = document.getElementById("app");
 
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
+  });
+  if (res.status === 401) {
+    state = { screen: "login", user: null, error: null };
+    render();
+    throw new Error("not logged in");
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || `request failed (${res.status})`);
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+function escapeHtml(s) {
+  const d = document.createElement("div");
+  d.textContent = s ?? "";
+  return d.innerHTML;
+}
+
+function topbar() {
+  if (!state.user) return "";
+  return `
+    <div class="topbar">
+      <strong>Negotiation Dojo</strong>
+      <div class="links">
+        <span>${escapeHtml(state.user.email)}</span>
+        <button class="link" id="nav-new">New</button>
+        <button class="link" id="nav-history">History</button>
+        <button class="link" id="nav-logout">Log out</button>
+      </div>
+    </div>
+  `;
+}
+
+function bindTopbar() {
+  document.getElementById("nav-new")?.addEventListener("click", () => { state.screen = "pick"; render(); });
+  document.getElementById("nav-history")?.addEventListener("click", showHistory);
+  document.getElementById("nav-logout")?.addEventListener("click", logout);
+}
+
 function render() {
+  if (state.screen === "loading") { app.innerHTML = ""; return; }
+  if (state.screen === "login") return renderAuth("login");
+  if (state.screen === "signup") return renderAuth("signup");
   if (state.screen === "pick") return renderPick();
   if (state.screen === "chat") return renderChat();
   if (state.screen === "reveal") return renderReveal();
+  if (state.screen === "history") return renderHistory();
+  if (state.screen === "history-detail") return renderHistoryDetail();
+}
+
+function renderAuth(mode) {
+  app.innerHTML = `
+    <h1>Negotiation Dojo</h1>
+    <p class="sub">Practice negotiations against an AI counterpart that stays in character.</p>
+    <form class="auth" id="auth-form">
+      <label>Email</label>
+      <input type="email" id="email" required />
+      <label>Password</label>
+      <input type="password" id="password" required minlength="8" />
+      <button type="submit">${mode === "login" ? "Log in" : "Sign up"}</button>
+    </form>
+    <p style="margin-top:14px;font-size:0.9rem;">
+      ${mode === "login"
+        ? `No account? <button class="link" id="switch">Sign up</button>`
+        : `Have an account? <button class="link" id="switch">Log in</button>`}
+    </p>
+    ${state.error ? `<p class="error">${escapeHtml(state.error)}</p>` : ""}
+  `;
+  document.getElementById("switch").addEventListener("click", () => {
+    state.screen = mode === "login" ? "signup" : "login";
+    state.error = null;
+    render();
+  });
+  document.getElementById("auth-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const email = document.getElementById("email").value.trim();
+    const password = document.getElementById("password").value;
+    state.error = null;
+    try {
+      if (mode === "signup") {
+        await api("/api/auth/signup", { method: "POST", body: JSON.stringify({ email, password }) });
+      }
+      await api("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
+      await loadMe();
+      state.screen = "pick";
+      render();
+    } catch (e) {
+      state.error = e.message;
+      render();
+    }
+  });
+}
+
+async function logout() {
+  await api("/api/auth/logout", { method: "POST" });
+  state = { screen: "login", user: null, error: null };
+  render();
 }
 
 function renderPick() {
   app.innerHTML = `
-    <h1>Negotiation Dojo</h1>
-    <p class="sub">Pick a scenario. You'll negotiate live against an AI counterpart.</p>
-    <div class="cards">
-      ${SCENARIOS.map(s => `
-        <button class="card" data-id="${s.id}">
-          <h3>${s.title}</h3>
-          <p>${s.desc}</p>
-        </button>
-      `).join("")}
-    </div>
-    ${state.error ? `<p class="error">${state.error}</p>` : ""}
+    ${topbar()}
+    <p class="sub">Describe a negotiation you want to practice, and pick the closest category.</p>
+    <form class="auth" id="pick-form">
+      <label>Category</label>
+      <select id="category">
+        ${categories.map(c => `<option value="${c.id}">${escapeHtml(c.label)}</option>`).join("")}
+      </select>
+      <label>Scenario</label>
+      <textarea id="scenario" placeholder="e.g. Negotiating the final price on a used car with a private seller. Listed at $14,000, I've done research and think it's worth closer to $12,000." required></textarea>
+      <button type="submit">Start Negotiation</button>
+    </form>
+    ${state.error ? `<p class="error">${escapeHtml(state.error)}</p>` : ""}
   `;
-  app.querySelectorAll(".card").forEach(el => {
-    el.addEventListener("click", () => startSession(el.dataset.id));
+  bindTopbar();
+  document.getElementById("pick-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const category = document.getElementById("category").value;
+    const scenario_text = document.getElementById("scenario").value.trim();
+    state.error = null;
+    try {
+      const data = await api("/api/negotiations", { method: "POST", body: JSON.stringify({ category, scenario_text }) });
+      chatState = { negotiationId: data.id, category: data.category, scenarioText: data.scenario_text, messages: [], sending: false, ending: false, error: null };
+      state.screen = "chat";
+      render();
+    } catch (e) {
+      state.error = e.message;
+      render();
+    }
   });
 }
 
 function renderChat() {
+  const c = chatState;
   app.innerHTML = `
+    ${topbar()}
     <div class="chat-header">
-      <h2>${state.title}</h2>
-      <p>${state.description}</p>
+      <h2>${escapeHtml(categories.find(x => x.id === c.category)?.label || c.category)}</h2>
+      <p>${escapeHtml(c.scenarioText)}</p>
     </div>
     <div class="messages" id="messages">
-      ${state.messages.map(m => `<div class="msg ${m.role} ${m.pending ? "pending" : ""}">${escapeHtml(m.content)}</div>`).join("")}
+      ${c.messages.map(m => `<div class="msg ${m.role} ${m.pending ? "pending" : ""}">${escapeHtml(m.content)}</div>`).join("")}
     </div>
     <form class="compose" id="compose">
-      <input type="text" id="input" placeholder="Make your offer..." autocomplete="off" ${state.sending ? "disabled" : ""} />
-      <button type="submit" ${state.sending ? "disabled" : ""}>Send</button>
+      <input type="text" class="compose-input" id="input" placeholder="Make your offer..." autocomplete="off" ${c.sending ? "disabled" : ""} />
+      <button type="submit" ${c.sending ? "disabled" : ""}>Send</button>
     </form>
     <div class="actions">
-      <button type="button" id="end" class="secondary" ${state.ending ? "disabled" : ""}>
-        ${state.ending ? "Ending..." : "End Negotiation"}
+      <button type="button" id="end" class="secondary" ${c.ending ? "disabled" : ""}>
+        ${c.ending ? "Ending..." : "End Negotiation"}
       </button>
     </div>
-    ${state.error ? `<p class="error">${state.error}</p>` : ""}
+    ${c.error ? `<p class="error">${escapeHtml(c.error)}</p>` : ""}
   `;
+  bindTopbar();
   document.getElementById("compose").addEventListener("submit", onSend);
   document.getElementById("end").addEventListener("click", onEnd);
   const box = document.getElementById("messages");
@@ -122,10 +243,49 @@ function renderChat() {
   document.getElementById("input")?.focus();
 }
 
+async function onSend(ev) {
+  ev.preventDefault();
+  const c = chatState;
+  const input = document.getElementById("input");
+  const text = input.value.trim();
+  if (!text || c.sending) return;
+  c.messages.push({ role: "user", content: text });
+  c.sending = true;
+  c.error = null;
+  render();
+  try {
+    const data = await api(`/api/negotiations/${c.negotiationId}/messages`, { method: "POST", body: JSON.stringify({ message: text }) });
+    c.messages.push({ role: "assistant", content: data.reply });
+  } catch (e) {
+    c.error = e.message;
+  } finally {
+    c.sending = false;
+    render();
+  }
+}
+
+async function onEnd() {
+  const c = chatState;
+  if (c.ending) return;
+  c.ending = true;
+  c.error = null;
+  render();
+  try {
+    const data = await api(`/api/negotiations/${c.negotiationId}/end`, { method: "POST" });
+    state.result = data;
+    state.screen = "reveal";
+  } catch (e) {
+    c.error = e.message;
+  } finally {
+    c.ending = false;
+    render();
+  }
+}
+
 function renderReveal() {
   const r = state.result;
   app.innerHTML = `
-    <h1>Negotiation Dojo</h1>
+    ${topbar()}
     <div class="reveal">
       <span class="outcome">${escapeHtml(r.outcome)}</span>
       <h2>Debrief</h2>
@@ -133,6 +293,7 @@ function renderReveal() {
       <div class="numbers">
         <div><div class="label">Their target</div><div class="value">${r.target}</div></div>
         <div><div class="label">Their walk-away</div><div class="value">${r.walk_away}</div></div>
+        <div><div class="label">Final number</div><div class="value">${r.final_number ?? "no deal"}</div></div>
       </div>
       <p><em>Personality: ${escapeHtml(r.personality)}</em></p>
     </div>
@@ -140,33 +301,50 @@ function renderReveal() {
       <button id="again">Try Another Scenario</button>
     </div>
   `;
-  document.getElementById("again").addEventListener("click", () => {
-    state = { screen: "pick", sessionId: null, title: "", description: "", messages: [], sending: false, ending: false, error: null };
+  bindTopbar();
+  document.getElementById("again").addEventListener("click", () => { state.screen = "pick"; render(); });
+}
+
+async function showHistory() {
+  try {
+    const list = await api("/api/negotiations");
+    state.historyList = list;
+    state.screen = "history";
     render();
+  } catch (e) {
+    state.error = e.message;
+    render();
+  }
+}
+
+function renderHistory() {
+  const list = state.historyList || [];
+  app.innerHTML = `
+    ${topbar()}
+    <h2>Past Negotiations</h2>
+    ${list.length === 0 ? `<p class="empty">No negotiations yet.</p>` : `
+      <div class="cards">
+        ${list.map(n => `
+          <button class="card" data-id="${n.id}">
+            <h3>${escapeHtml(categories.find(x => x.id === n.category)?.label || n.category)}</h3>
+            <p>${escapeHtml(n.scenario_text)}</p>
+            <div class="meta">${n.ended_at ? escapeHtml(n.outcome || "ended") : "in progress"} · ${new Date(n.created_at).toLocaleString()}</div>
+          </button>
+        `).join("")}
+      </div>
+    `}
+  `;
+  bindTopbar();
+  app.querySelectorAll(".card").forEach(el => {
+    el.addEventListener("click", () => showHistoryDetail(el.dataset.id));
   });
 }
 
-function escapeHtml(s) {
-  const d = document.createElement("div");
-  d.textContent = s;
-  return d.innerHTML;
-}
-
-async function startSession(scenarioId) {
-  state.error = null;
+async function showHistoryDetail(id) {
   try {
-    const res = await fetch("/api/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scenario: scenarioId }),
-    });
-    if (!res.ok) throw new Error("failed to start session");
-    const data = await res.json();
-    state.screen = "chat";
-    state.sessionId = data.session_id;
-    state.title = data.title;
-    state.description = data.description;
-    state.messages = [];
+    const data = await api(`/api/negotiations/${id}`);
+    state.historyDetail = data;
+    state.screen = "history-detail";
     render();
   } catch (e) {
     state.error = e.message;
@@ -174,52 +352,54 @@ async function startSession(scenarioId) {
   }
 }
 
-async function onSend(ev) {
-  ev.preventDefault();
-  const input = document.getElementById("input");
-  const text = input.value.trim();
-  if (!text || state.sending) return;
-  state.messages.push({ role: "user", content: text });
-  state.sending = true;
-  state.error = null;
+function renderHistoryDetail() {
+  const d = state.historyDetail;
+  app.innerHTML = `
+    ${topbar()}
+    <div class="chat-header">
+      <h2>${escapeHtml(categories.find(x => x.id === d.category)?.label || d.category)}</h2>
+      <p>${escapeHtml(d.scenario_text)}</p>
+    </div>
+    <div class="messages">
+      ${d.messages.map(m => `<div class="msg ${m.role}">${escapeHtml(m.content)}</div>`).join("")}
+    </div>
+    ${d.reveal ? `
+      <div class="reveal" style="margin-top:16px;">
+        <span class="outcome">${escapeHtml(d.reveal.outcome)}</span>
+        <h2>Debrief</h2>
+        <p>${escapeHtml(d.reveal.debrief)}</p>
+        <div class="numbers">
+          <div><div class="label">Their target</div><div class="value">${d.reveal.target}</div></div>
+          <div><div class="label">Their walk-away</div><div class="value">${d.reveal.walk_away}</div></div>
+          <div><div class="label">Final number</div><div class="value">${d.reveal.final_number ?? "no deal"}</div></div>
+        </div>
+      </div>
+    ` : `<p class="empty">This negotiation hasn't ended yet.</p>`}
+    <div class="actions">
+      <button class="secondary" id="back">Back to History</button>
+    </div>
+  `;
+  bindTopbar();
+  document.getElementById("back").addEventListener("click", showHistory);
+}
+
+async function loadMe() {
+  const me = await api("/api/auth/me");
+  state.user = me;
+}
+
+async function init() {
+  categories = await fetch("/api/categories").then(r => r.json());
+  try {
+    await loadMe();
+    state.screen = "pick";
+  } catch (e) {
+    state.screen = "login";
+  }
   render();
-  try {
-    const res = await fetch(`/api/sessions/${state.sessionId}/messages`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text }),
-    });
-    if (!res.ok) throw new Error("failed to send message");
-    const data = await res.json();
-    state.messages.push({ role: "assistant", content: data.reply });
-  } catch (e) {
-    state.error = e.message;
-  } finally {
-    state.sending = false;
-    render();
-  }
 }
 
-async function onEnd() {
-  if (state.ending) return;
-  state.ending = true;
-  state.error = null;
-  render();
-  try {
-    const res = await fetch(`/api/sessions/${state.sessionId}/end`, { method: "POST" });
-    if (!res.ok) throw new Error("failed to end session");
-    const data = await res.json();
-    state.result = data;
-    state.screen = "reveal";
-  } catch (e) {
-    state.error = e.message;
-  } finally {
-    state.ending = false;
-    render();
-  }
-}
-
-render();
+init();
 </script>
 </body>
 </html>
