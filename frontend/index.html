@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Negotiation Dojo</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #f6f5f2; color: #1a1a1a; min-height: 100vh;
+  }
+  .wrap { max-width: 640px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: 1.5rem; margin-bottom: 4px; }
+  .sub { color: #666; margin-top: 0; margin-bottom: 28px; }
+
+  .cards { display: grid; gap: 14px; }
+  .card {
+    border: 1px solid #ddd; border-radius: 10px; padding: 18px 20px;
+    background: #fff; cursor: pointer; text-align: left;
+  }
+  .card:hover { border-color: #999; }
+  .card h3 { margin: 0 0 6px; font-size: 1.05rem; }
+  .card p { margin: 0; color: #555; font-size: 0.92rem; line-height: 1.4; }
+
+  .chat-header { border-bottom: 1px solid #ddd; padding-bottom: 14px; margin-bottom: 16px; }
+  .chat-header h2 { margin: 0 0 6px; font-size: 1.2rem; }
+  .chat-header p { margin: 0; color: #555; font-size: 0.9rem; }
+
+  .messages { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; min-height: 200px; }
+  .msg { padding: 10px 14px; border-radius: 10px; max-width: 80%; line-height: 1.4; white-space: pre-wrap; }
+  .msg.user { align-self: flex-end; background: #2a63f6; color: #fff; }
+  .msg.assistant { align-self: flex-start; background: #eee; color: #1a1a1a; }
+  .msg.pending { opacity: 0.5; }
+
+  form.compose { display: flex; gap: 8px; }
+  input[type=text] {
+    flex: 1; padding: 10px 12px; border: 1px solid #ccc; border-radius: 8px; font-size: 0.95rem;
+  }
+  button {
+    padding: 10px 16px; border: none; border-radius: 8px; background: #2a63f6; color: #fff;
+    font-size: 0.95rem; cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.secondary { background: #eee; color: #333; }
+  .actions { display: flex; justify-content: flex-end; margin-top: 14px; }
+
+  .reveal { background: #fff; border: 1px solid #ddd; border-radius: 10px; padding: 20px; }
+  .reveal h2 { margin-top: 0; }
+  .numbers { display: flex; gap: 24px; margin: 14px 0; }
+  .numbers div { flex: 1; }
+  .numbers .label { font-size: 0.8rem; color: #777; text-transform: uppercase; }
+  .numbers .value { font-size: 1.3rem; font-weight: 600; }
+  .outcome { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #eef; font-size: 0.85rem; margin-bottom: 10px; }
+  .error { color: #c0392b; margin-top: 10px; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<div class="wrap" id="app"></div>
+
+<script>
+const SCENARIOS = [
+  { id: "salary", title: "Salary Negotiation", desc: "You've received a job offer as a Senior Software Engineer and want to negotiate the base salary before accepting." },
+  { id: "rent", title: "Apartment Rent", desc: "Your landlord proposed a rent increase at lease renewal. You want to negotiate the new monthly rent down." },
+  { id: "vendor", title: "Vendor / Freelance Rate", desc: "You're a freelancer negotiating your project rate with a prospective client." },
+];
+
+let state = { screen: "pick", sessionId: null, title: "", description: "", messages: [], sending: false, ending: false, error: null };
+
+const app = document.getElementById("app");
+
+function render() {
+  if (state.screen === "pick") return renderPick();
+  if (state.screen === "chat") return renderChat();
+  if (state.screen === "reveal") return renderReveal();
+}
+
+function renderPick() {
+  app.innerHTML = `
+    <h1>Negotiation Dojo</h1>
+    <p class="sub">Pick a scenario. You'll negotiate live against an AI counterpart.</p>
+    <div class="cards">
+      ${SCENARIOS.map(s => `
+        <button class="card" data-id="${s.id}">
+          <h3>${s.title}</h3>
+          <p>${s.desc}</p>
+        </button>
+      `).join("")}
+    </div>
+    ${state.error ? `<p class="error">${state.error}</p>` : ""}
+  `;
+  app.querySelectorAll(".card").forEach(el => {
+    el.addEventListener("click", () => startSession(el.dataset.id));
+  });
+}
+
+function renderChat() {
+  app.innerHTML = `
+    <div class="chat-header">
+      <h2>${state.title}</h2>
+      <p>${state.description}</p>
+    </div>
+    <div class="messages" id="messages">
+      ${state.messages.map(m => `<div class="msg ${m.role} ${m.pending ? "pending" : ""}">${escapeHtml(m.content)}</div>`).join("")}
+    </div>
+    <form class="compose" id="compose">
+      <input type="text" id="input" placeholder="Make your offer..." autocomplete="off" ${state.sending ? "disabled" : ""} />
+      <button type="submit" ${state.sending ? "disabled" : ""}>Send</button>
+    </form>
+    <div class="actions">
+      <button type="button" id="end" class="secondary" ${state.ending ? "disabled" : ""}>
+        ${state.ending ? "Ending..." : "End Negotiation"}
+      </button>
+    </div>
+    ${state.error ? `<p class="error">${state.error}</p>` : ""}
+  `;
+  document.getElementById("compose").addEventListener("submit", onSend);
+  document.getElementById("end").addEventListener("click", onEnd);
+  const box = document.getElementById("messages");
+  box.scrollTop = box.scrollHeight;
+  document.getElementById("input")?.focus();
+}
+
+function renderReveal() {
+  const r = state.result;
+  app.innerHTML = `
+    <h1>Negotiation Dojo</h1>
+    <div class="reveal">
+      <span class="outcome">${escapeHtml(r.outcome)}</span>
+      <h2>Debrief</h2>
+      <p>${escapeHtml(r.debrief)}</p>
+      <div class="numbers">
+        <div><div class="label">Their target</div><div class="value">${r.target}</div></div>
+        <div><div class="label">Their walk-away</div><div class="value">${r.walk_away}</div></div>
+      </div>
+      <p><em>Personality: ${escapeHtml(r.personality)}</em></p>
+    </div>
+    <div class="actions">
+      <button id="again">Try Another Scenario</button>
+    </div>
+  `;
+  document.getElementById("again").addEventListener("click", () => {
+    state = { screen: "pick", sessionId: null, title: "", description: "", messages: [], sending: false, ending: false, error: null };
+    render();
+  });
+}
+
+function escapeHtml(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+async function startSession(scenarioId) {
+  state.error = null;
+  try {
+    const res = await fetch("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scenario: scenarioId }),
+    });
+    if (!res.ok) throw new Error("failed to start session");
+    const data = await res.json();
+    state.screen = "chat";
+    state.sessionId = data.session_id;
+    state.title = data.title;
+    state.description = data.description;
+    state.messages = [];
+    render();
+  } catch (e) {
+    state.error = e.message;
+    render();
+  }
+}
+
+async function onSend(ev) {
+  ev.preventDefault();
+  const input = document.getElementById("input");
+  const text = input.value.trim();
+  if (!text || state.sending) return;
+  state.messages.push({ role: "user", content: text });
+  state.sending = true;
+  state.error = null;
+  render();
+  try {
+    const res = await fetch(`/api/sessions/${state.sessionId}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: text }),
+    });
+    if (!res.ok) throw new Error("failed to send message");
+    const data = await res.json();
+    state.messages.push({ role: "assistant", content: data.reply });
+  } catch (e) {
+    state.error = e.message;
+  } finally {
+    state.sending = false;
+    render();
+  }
+}
+
+async function onEnd() {
+  if (state.ending) return;
+  state.ending = true;
+  state.error = null;
+  render();
+  try {
+    const res = await fetch(`/api/sessions/${state.sessionId}/end`, { method: "POST" });
+    if (!res.ok) throw new Error("failed to end session");
+    const data = await res.json();
+    state.result = data;
+    state.screen = "reveal";
+  } catch (e) {
+    state.error = e.message;
+  } finally {
+    state.ending = false;
+    render();
+  }
+}
+
+render();
+</script>
+</body>
+</html>
